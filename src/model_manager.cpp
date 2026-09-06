@@ -97,6 +97,7 @@ static bool device_supports_param_op(ggml_backend_dev_t device,
 
 ModelManager::~ModelManager() {
     release_all();
+    release_prefetch();
 }
 
 void ModelManager::set_common_ignore_tensors(std::set<std::string> ignore_tensors) {
@@ -255,6 +256,7 @@ bool ModelManager::unregister_param_tensors(const std::string& desc, size_t* reg
         return true;
     }
 
+    clear_all_prefetched_params();
     release_compute_staging_blocks(false);
 
     std::vector<ParamsStorageBlock*> storage_blocks_to_release;
@@ -608,6 +610,7 @@ bool ModelManager::apply_loras_to_params(const std::vector<TensorState*>& states
 }
 
 void ModelManager::reset_lora_applied_params() {
+    clear_all_prefetched_params();
     release_compute_staging_blocks(true);
     release_params_storage_blocks(true);
     for (auto& state : tensor_states_) {
@@ -1044,6 +1047,7 @@ void ModelManager::erase_params_storage_block(ParamsStorageBlock* block) {
 }
 
 void ModelManager::release_all() {
+    clear_all_prefetched_params();
     for (auto& state : tensor_states_) {
         state->active_prepare_count = 0;
         state->applied_lora_epoch   = UINT64_MAX;
@@ -1097,6 +1101,7 @@ bool ModelManager::assign_compute_backend(const std::vector<ggml_tensor*>& tenso
         return false;
     }
 
+    clear_all_prefetched_params();
     for (TensorState* state : required_states) {
         if (state == nullptr || state->tensor == nullptr) {
             continue;

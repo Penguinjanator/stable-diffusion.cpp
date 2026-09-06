@@ -248,8 +248,9 @@ public:
     sd_tiling_params_t vae_tiling_params = {false, false, 0, 0, 0.5f, 0, 0, nullptr};
     bool enable_mmap                     = false;
     sd::ggml_graph_cut::MaxVramAssignment max_vram_assignment;
-    bool stream_layers = false;
-    bool eager_load    = false;
+    bool stream_layers    = false;
+    bool disable_prefetch = false;
+    bool eager_load       = false;
     std::string backend_spec;
     std::string params_backend_spec;
     std::string split_mode_spec;
@@ -862,6 +863,7 @@ public:
         n_threads           = sd_ctx_params->n_threads;
         enable_mmap         = sd_ctx_params->enable_mmap;
         stream_layers       = sd_ctx_params->stream_layers;
+        disable_prefetch    = sd_ctx_params->disable_prefetch;
         eager_load          = sd_ctx_params->eager_load;
         backend_spec        = SAFE_STR(sd_ctx_params->backend);
         params_backend_spec = SAFE_STR(sd_ctx_params->params_backend);
@@ -1356,6 +1358,7 @@ public:
 
             diffusion_model->set_max_graph_vram_bytes(max_graph_vram_bytes_for_module(SDBackendModule::DIFFUSION));
             diffusion_model->set_stream_layers_enabled(stream_layers);
+            diffusion_model->set_layer_prefetch_enabled(!disable_prefetch);
             if (!register_runner_params("Diffusion model",
                                         diffusion_model,
                                         SDBackendModule::DIFFUSION,
@@ -1366,6 +1369,7 @@ public:
             if (high_noise_diffusion_model) {
                 high_noise_diffusion_model->set_max_graph_vram_bytes(max_graph_vram_bytes_for_module(SDBackendModule::DIFFUSION));
                 high_noise_diffusion_model->set_stream_layers_enabled(stream_layers);
+                high_noise_diffusion_model->set_layer_prefetch_enabled(!disable_prefetch);
                 if (!register_runner_params("High noise diffusion model",
                                             high_noise_diffusion_model,
                                             SDBackendModule::DIFFUSION,
@@ -3572,6 +3576,7 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->lora_apply_mode      = LORA_APPLY_AUTO;
     sd_ctx_params->max_vram             = nullptr;
     sd_ctx_params->stream_layers        = false;
+    sd_ctx_params->disable_prefetch     = false;
     sd_ctx_params->eager_load           = false;
     sd_ctx_params->enable_mmap          = false;
     sd_ctx_params->diffusion_flash_attn = false;
@@ -3617,6 +3622,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              "prediction: %s\n"
              "max_vram: %s\n"
              "stream_layers: %s\n"
+             "disable_prefetch: %s\n"
              "eager_load: %s\n"
              "backend: %s\n"
              "params_backend: %s\n"
@@ -3651,6 +3657,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              sd_prediction_name(sd_ctx_params->prediction),
              SAFE_STR(sd_ctx_params->max_vram),
              BOOL_STR(sd_ctx_params->stream_layers),
+             BOOL_STR(sd_ctx_params->disable_prefetch),
              BOOL_STR(sd_ctx_params->eager_load),
              SAFE_STR(sd_ctx_params->backend),
              SAFE_STR(sd_ctx_params->params_backend),

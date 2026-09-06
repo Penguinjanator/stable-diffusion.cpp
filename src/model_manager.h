@@ -61,12 +61,24 @@ private:
         std::vector<std::pair<TensorState*, ggml_tensor*>> staged_tensors;
     };
 
+    struct PrefetchBlock {
+        std::vector<TensorState*> states;
+        ggml_backend_t compute_backend  = nullptr;
+        ggml_backend_t transfer_backend = nullptr;
+        ggml_backend_event_t event      = nullptr;
+        ggml_context* staging_ctx       = nullptr;
+        ggml_backend_buffer_t buffer    = nullptr;
+        std::vector<std::pair<TensorState*, ggml_tensor*>> staged_tensors;
+    };
+
     ModelLoader model_loader_;
     std::vector<std::unique_ptr<TensorState>> tensor_states_;
     std::map<std::string, TensorState*> tensor_states_by_name_;
     std::vector<std::unique_ptr<ParamsStorageBlock>> params_storage_blocks_;
     std::vector<std::unique_ptr<ComputeStagingBlock>> compute_staging_blocks_;
     std::map<ggml_backend_t, ggml_backend_buffer_type_t> split_buffer_types_;
+    std::map<uintptr_t, std::unique_ptr<PrefetchBlock>> prefetch_blocks_;
+    std::map<ggml_backend_t, ggml_backend_t> prefetch_backends_;
     bool warned_split_lora_skip_ = false;
     std::set<std::string> common_ignore_tensors_;
     std::vector<LoraSpec> loras_;
@@ -78,6 +90,13 @@ private:
 
     void finish_compute_backend_usage(const std::vector<TensorState*>& states);
     void release_all();
+
+    ggml_backend_t prefetch_backend_for(ggml_backend_t compute_backend);
+    bool populate_prefetch_block(PrefetchBlock& block);
+    void synchronize_prefetch_block(PrefetchBlock& block);
+    void free_prefetch_block(PrefetchBlock& block);
+    void clear_all_prefetched_params();
+    void release_prefetch();
 
     bool resolve_required_tensor_states(const std::vector<ggml_tensor*>& tensors,
                                         std::vector<TensorState*>& required_states) const;
@@ -182,6 +201,11 @@ public:
     bool prepare_params(const std::vector<ggml_tensor*>& tensors) override;
     void release_compute_backend_params(const std::vector<ggml_tensor*>& tensors) override;
     void release_params_backend_params(const std::vector<ggml_tensor*>& tensors) override;
+    bool prefetch_params(uintptr_t owner_id,
+                         const std::vector<ggml_tensor*>& tensors) override;
+    bool activate_prefetched_params(uintptr_t owner_id,
+                                    const std::vector<ggml_tensor*>& tensors) override;
+    void clear_prefetched_params(uintptr_t owner_id) override;
 };
 
 #endif  // __MODEL_MANAGER_H__

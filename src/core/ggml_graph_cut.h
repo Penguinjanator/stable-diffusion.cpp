@@ -122,8 +122,10 @@ namespace sd::ggml_graph_cut {
                       const std::unordered_set<const ggml_tensor*>& params_tensor_set,
                       const char* log_desc);
 
-    // Mark leading segments resident when they fit after streamed-segment headroom.
-    void annotate_residency(Plan& plan, size_t max_graph_vram_bytes);
+    // Mark leading segments resident after reserving streamed execution headroom.
+    void annotate_residency(Plan& plan,
+                            size_t max_graph_vram_bytes,
+                            bool prefetch_enabled);
 }  // namespace sd::ggml_graph_cut
 
 #endif  // __SD_CORE_GGML_GRAPH_CUT_H__

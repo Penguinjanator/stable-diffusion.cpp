@@ -995,7 +995,9 @@ namespace sd::ggml_graph_cut {
         return resolved_plan;
     }
 
-    void annotate_residency(Plan& plan, size_t max_graph_vram_bytes) {
+    void annotate_residency(Plan& plan,
+                            size_t max_graph_vram_bytes,
+                            bool prefetch_enabled) {
         // Cached plans may be reused with a smaller live budget.
         for (auto& seg : plan.segments) {
             seg.residency = SegmentResidency::STREAMED;
@@ -1017,6 +1019,7 @@ namespace sd::ggml_graph_cut {
 
         // Leave room for the largest active streamed segment.
         size_t worst_streamed_footprint = 0;
+        size_t prefetch_headroom        = 0;
         for (const auto& seg : plan.segments) {
             const size_t seg_footprint = seg.input_param_bytes +
                                          seg.compute_buffer_size +
@@ -1026,9 +1029,19 @@ namespace sd::ggml_graph_cut {
             if (seg_footprint > worst_streamed_footprint) {
                 worst_streamed_footprint = seg_footprint;
             }
+            prefetch_headroom = std::max(prefetch_headroom, seg.input_param_bytes);
         }
         constexpr size_t safety = 512ull * 1024 * 1024;
-        const size_t reserved   = safety + worst_streamed_footprint;
+        if (worst_streamed_footprint > SIZE_MAX - safety) {
+            return;
+        }
+        size_t reserved = safety + worst_streamed_footprint;
+        if (prefetch_enabled) {
+            if (prefetch_headroom > SIZE_MAX - reserved) {
+                return;
+            }
+            reserved += prefetch_headroom;
+        }
 
         if (max_graph_vram_bytes <= reserved) {
             return;

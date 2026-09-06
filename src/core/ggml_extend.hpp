@@ -27,6 +27,7 @@
 #include "core/ggml_extend_backend.h"
 #include "core/ggml_graph_cut.h"
 #include "core/layer_split_partition.h"
+#include "core/layer_stream_prefetch.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml.h"
@@ -1788,6 +1789,7 @@ protected:
 
     size_t max_graph_vram_bytes           = 0;
     bool stream_layers_enabled            = false;
+    bool layer_prefetch_enabled           = true;
     size_t observed_max_effective_budget_ = 0;
     bool graph_cut_layer_split_enabled    = false;
     std::vector<size_t> graph_cut_layer_split_backend_vram_limits_;
@@ -2513,7 +2515,9 @@ protected:
                                                      params_tensor_set_,
                                                      get_desc().c_str());
         if (stream_layers_enabled) {
-            sd::ggml_graph_cut::annotate_residency(*plan_out, effective_budget);
+            sd::ggml_graph_cut::annotate_residency(*plan_out,
+                                                   effective_budget,
+                                                   layer_prefetch_enabled);
         }
         if (stream_layers_enabled) {
             if (budget_increased) {
@@ -2771,7 +2775,8 @@ protected:
                                                bool free_compute_params,
                                                bool preserve_backend_tensor_data_map,
                                                bool no_return                                          = false,
-                                               const std::unordered_set<std::string>* cache_keep_names = nullptr) {
+                                               const std::unordered_set<std::string>* cache_keep_names = nullptr,
+                                               const std::function<void()>& before_compute             = {}) {
         std::vector<ggml_tensor*> graph_param_tensors;
         std::vector<ggml_tensor*> params_to_prepare;
         if (!prepare_execute_graph_weights(gf, graph_param_tensors, params_to_prepare, !free_compute_params)) {
@@ -2835,6 +2840,9 @@ protected:
         }
 
         copy_data_to_backend_tensor(gf, !preserve_backend_tensor_data_map);
+        if (before_compute) {
+            before_compute();
+        }
         if (sd_backend_is_cpu(runtime_backend)) {
             sd_backend_cpu_set_n_threads(runtime_backend, n_threads);
         }
@@ -2940,6 +2948,20 @@ protected:
         free_compute_buffer();
         free_cache_ctx_and_buffer();
 
+        sd::LayerStreamPrefetch prefetch(weight_manager.lock(),
+                                         reinterpret_cast<uintptr_t>(this),
+                                         gf,
+                                         plan,
+                                         params_tensor_set_,
+                                         stream_layers_enabled && layer_prefetch_enabled);
+        auto disable_prefetch = [&]() {
+            if (layer_prefetch_enabled) {
+                LOG_WARN("%s layer prefetch failed; continuing with synchronous streaming",
+                         get_desc().c_str());
+            }
+            layer_prefetch_enabled = false;
+        };
+
         std::unordered_map<ggml_tensor*, PersistentExternalBinding> persistent_externals;
         snapshot_persistent_externals(plan, gf, persistent_externals);
 
@@ -2948,6 +2970,9 @@ protected:
             const auto& segment   = plan.segments[seg_idx];
             const bool is_last    = seg_idx + 1 == plan.segments.size();
             auto future_cut_names = sd::ggml_graph_cut::collect_future_input_names(gf, plan, seg_idx);
+            if (!prefetch.activate(seg_idx)) {
+                disable_prefetch();
+            }
             if (log_residency) {
                 LOG_DEBUG("%s graph cut executing segment %zu/%zu: %s (residency=%s)",
                           get_desc().c_str(),
@@ -2985,13 +3010,22 @@ protected:
             ggml_context* segment_graph_ctx = nullptr;
             ggml_cgraph* segment_graph      = sd::ggml_graph_cut::build_segment_graph(gf, segment, &segment_graph_ctx);
             const bool keep_segment_params  = segment.residency == sd::ggml_graph_cut::SegmentResidency::RESIDENT;
-            auto segment_output             = execute_graph<T>(segment_graph,
+            std::function<void()> before_compute;
+            if (prefetch.enabled()) {
+                before_compute = [&, seg_idx]() {
+                    if (!prefetch.enqueue_next(seg_idx)) {
+                        disable_prefetch();
+                    }
+                };
+            }
+            auto segment_output = execute_graph<T>(segment_graph,
                                                    n_threads,
                                                    true,
                                                    !keep_segment_params,
                                                    true,
                                                    !is_last || no_return,
-                                                   &future_cut_names);
+                                                   &future_cut_names,
+                                                   before_compute);
             ggml_free(segment_graph_ctx);
             if (!segment_output.has_value()) {
                 free_cache_ctx_and_buffer();
@@ -3237,6 +3271,10 @@ public:
             return;
         }
         stream_layers_enabled = enabled;
+    }
+
+    void set_layer_prefetch_enabled(bool enabled) {
+        layer_prefetch_enabled = enabled;
     }
 
     void set_graph_cut_layer_split_enabled(bool enabled) {
